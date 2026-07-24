@@ -1,0 +1,168 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Page config
+st.set_page_config(page_title="Salud Ocupacional - CFRN", page_icon="⚓", layout="wide")
+
+# Mock Database / State Initialization
+if 'db' not in st.session_state:
+    st.session_state.db = pd.DataFrame([
+        {
+            "id": 1, "nombres": "Pérez Gómez, Juan Carlos", "cargo": "Operador de Cubierta", 
+            "embarcacion": "Lancha Napo Express", "tipo_examen": "Periódico", 
+            "fecha_emision": "2025-08-10", "patologias": "Hipoacusia leve, Sobrepeso Grado II", 
+            "catastrofica": "No", "restriccion": "Uso obligatorio de EPP auditivo", "estado": "Vigente"
+        },
+        {
+            "id": 2, "nombres": "Andrade Silva, Luis Fernando", "cargo": "Estibador / Mantenimiento", 
+            "embarcacion": "Baza Operativa Block 43", "tipo_examen": "Ingreso", 
+            "fecha_emision": "2025-06-15", "patologias": "Diabetes Mellitus Tipo 2", 
+            "catastrofica": "Sí", "restriccion": "Restricción para carga pesada y turnos nocturnos", "estado": "Por Vencer / Vencido"
+        },
+        {
+            "id": 3, "nombres": "Zambrano Vera, María José", "cargo": "Administrativa", 
+            "embarcacion": "Base Coca (Oficina)", "tipo_examen": "Periódico", 
+            "fecha_emision": "2026-02-10", "patologias": "Ninguna", 
+            "catastrofica": "No", "restriccion": "Ninguna", "estado": "Vigente"
+        }
+    ])
+
+# Sidebar - Authentication & Role Selection
+st.sidebar.title("🔐 Control de Acceso")
+role = st.sidebar.selectbox("Seleccione su Rol:", ["Departamento Médico", "Jefes / Capitanes / Operaciones"])
+embarcacion_filtro = st.sidebar.selectbox("Filtrar por Embarcación / Base:", ["Todas", "Lancha Napo Express", "Baza Operativa Block 43", "Base Coca (Oficina)"])
+
+st.title("⚓ Sistema de Gestión de Salud Ocupacional - CFRN")
+st.markdown("---")
+
+df = st.session_state.db
+
+# Calculate Expiration and Status dynamically
+today = datetime.now().date()
+def evaluate_status(date_str):
+    try:
+        emision = datetime.strptime(str(date_str), "%Y-%m-%d").date()
+        caducidad = emision + timedelta(days=365)
+        dias_restantes = (caducidad - today).days
+        if dias_restantes < 0:
+            return "Caducado 🔴"
+        elif dias_restantes <= 30:
+            return "Por Vencer (30 días) 🟡"
+        else:
+            return "Vigente 🟢"
+    except:
+        return "Desconocido"
+
+df['fecha_caducidad'] = pd.to_datetime(df['fecha_emision']).dt.date.apply(lambda x: x + timedelta(days=365) if pd.notnull(x) else None)
+df['estado_vigencia'] = df['fecha_emision'].apply(evaluate_status)
+
+# --- ALERTS DASHBOARD ---
+caducados_count = len(df[df['estado_vigencia'].str.contains("Caducado")])
+por_vencer_count = len(df[df['estado_vigencia'].str.contains("Por Vencer")])
+catastroficas_count = len(df[df['catastrofica'] == 'Sí'])
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Exámenes Caducados", f"{caducados_count}", delta_color="inverse")
+col2.metric("Por Vencer (Próx. 30 días)", f"{por_vencer_count}")
+col3.metric("Enfermedades Catastróficas / Crónicas", f"{catastroficas_count}", delta="Atención Prioritaria", delta_color="inverse")
+
+st.markdown("---")
+
+# Navigation Tabs based on Role
+if role == "Departamento Médico":
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📋 Matriz General", 
+        "📤 Cargar / Subir Examen", 
+        "🚨 Enfermedades Catastróficas", 
+        "🔍 Buscador por Patología", 
+        "⏳ Control de Vencimientos"
+    ])
+else:
+    tab1, tab2 = st.tabs(["🚢 Estado por Embarcación", "🟢 Aptitud Operativa del Personal"])
+
+# --- TAB 1: Matriz General / Embarcación ---
+with tab1:
+    if role == "Departamento Médico":
+        st.subheader("Matriz Completa de Salud Ocupacional")
+        search_query = st.text_input("Buscar por nombre, cédula o cargo:")
+        if search_query:
+            filtered_df = df[df['nombres'].str.contains(search_query, case=False) | df['cargo'].str.contains(search_query, case=False)]
+        else:
+            filtered_df = df
+        
+        if embarcacion_filtro != "Todas":
+            filtered_df = filtered_df[filtered_df['embarcacion'] == embarcacion_filtro]
+            
+        st.dataframe(filtered_df[['nombres', 'cargo', 'embarcacion', 'tipo_examen', 'fecha_emision', 'fecha_caducidad', 'patologias', 'catastrofica', 'restriccion', 'estado_vigencia']], use_container_width=True)
+    else:
+        st.subheader("Distribución de Personal y Aptitud por Embarcación")
+        st.markdown("Vista restringida para jefes y capitanes: Solo muestra aptitud y restricciones operativas sin detalles clínicos privados.")
+        view_df = df if embarcacion_filtro == "Todas" else df[df['embarcacion'] == embarcacion_filtro]
+        st.dataframe(view_df[['nombres', 'cargo', 'embarcacion', 'restriccion', 'estado_vigencia']], use_container_width=True)
+
+# --- TAB 2 (Med): Carga de Exámenes ---
+if role == "Departamento Médico":
+    with tab2:
+        st.subheader("Subir y Procesar Nuevo Examen Ocupacional")
+        uploaded_file = st.file_uploader("Seleccione el archivo PDF del examen ocupacional", type=["pdf", "png", "jpg"])
+        
+        with st.form("form_examen"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                nombre_trabajador = st.text_input("Apellidos y Nombres")
+                cargo_trabajador = st.text_input("Cargo")
+                embarcacion_trabajador = st.selectbox("Embarcación / Base", ["Lancha Napo Express", "Baza Operativa Block 43", "Base Coca (Oficina)", "Block 31", "Block 58"])
+                tipo_ex = st.selectbox("Tipo de Examen", ["Ingreso", "Periódico", "Retiro"])
+            with col_b:
+                fecha_em = st.date_input("Fecha de Emisión del Examen")
+                patologia_ingresada = st.text_input("Patologías / Hallazgos encontrados (Ej. Obesidad Grado 2, Hipoacusia)")
+                es_catastrofica = st.selectbox("¿Es Enfermedad Catastrófica o Crónica?", ["No", "Sí"])
+                restricciones_ing = st.text_input("Restricciones Laborales (Si aplica)")
+            
+            submit_btn = st.form_submit_button("Guardar y Procesar Examen")
+            if submit_btn and nombre_trabajador:
+                new_row = {
+                    "id": len(df) + 1, "nombres": nombre_trabajador, "cargo": cargo_trabajador,
+                    "embarcacion": embarcacion_trabajador, "tipo_examen": tipo_ex,
+                    "fecha_emision": str(fecha_em), "patologias": patologia_ingresada,
+                    "catastrofica": es_catastrofica, "restriccion": restricciones_ing, "estado": "Vigente"
+                }
+                st.session_state.db = pd.concat([st.session_state.db, pd.DataFrame([new_row])], ignore_index=True)
+                st.success(f"¡Examen de {nombre_trabajador} guardado correctamente! La fecha de caducidad se calculó a 1 año.")
+
+# --- TAB 3 (Med): Enfermedades Catastróficas ---
+if role == "Departamento Médico":
+    with tab3:
+        st.subheader("⚠️ Registro de Personal con Enfermedades Catastróficas / Crónicas")
+        cat_df = df[df['catastrofica'] == 'Sí']
+        if len(cat_df) > 0:
+            st.dataframe(cat_df[['nombres', 'cargo', 'embarcacion', 'patologias', 'restriccion', 'fecha_emision']], use_container_width=True)
+        else:
+            st.info("No hay registros marcados con enfermedades catastróficas actualmente.")
+
+# --- TAB 4 (Med): Buscador por Patología ---
+if role == "Departamento Médico":
+    with tab4:
+        st.subheader("🔍 Buscador Inteligente por Patología o Hallazgo")
+        patologia_search = st.text_input("Escriba la condición a buscar (Ej. Obesidad Grado 2, Hipoacusia, Diabetes):")
+        if patologia_search:
+            result_search = df[df['patologias'].str.contains(patologia_search, case=False)]
+            st.write(f"Resultados encontrados: {len(result_search)}")
+            if len(result_search) > 0:
+                st.dataframe(result_search[['nombres', 'cargo', 'embarcacion', 'patologias', 'restriccion', 'tipo_examen']], use_container_width=True)
+            else:
+                st.warning("No se encontraron colaboradores con esa patología específica.")
+
+# --- TAB 5 (Med): Control de Vencimientos ---
+if role == "Departamento Médico":
+    with tab5:
+        st.subheader("⏳ Control y Alertas de Vencimiento (Validez: 1 Año)")
+        st.markdown("Personal cuyos exámenes están **próximos a vencer en 30 días** o ya se encuentran **caducados**:")
+        
+        vencidos_df = df[df['estado_vigencia'].str.contains("Caducado|Por Vencer")]
+        if len(vencidos_df) > 0:
+            st.dataframe(vencidos_df[['nombres', 'cargo', 'embarcacion', 'fecha_emision', 'fecha_caducidad', 'estado_vigencia']], use_container_width=True)
+            st.warning("⚠️ Recuerde programar las evaluaciones periódicas para mantener el cumplimiento normativo operativo.")
+        else:
+            st.success("¡Excelente! Todo el personal cuenta con exámenes vigentes por el momento.")
